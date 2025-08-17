@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package docgen;
+option go_package = "github.com/dedinirtadinata/docxtool/docgenpb;docgenpb";
+
+service DocService {
+  // Mengembalikan daftar placeholder ditemukan di template DOCX
+  rpc GetPlaceholders(TemplateRequest) returns (PlaceholderResponse);
+
+  // Generate PDF dari template DOCX + data
+  rpc GeneratePDF(GenerateRequest) returns (GenerateResponse);
+
+  // (opsional) hanya hasil DOCX
+  rpc GenerateDocx(GenerateRequest) returns (GenerateResponse);
+}
+
+message TemplateRequest {
+  bytes template = 1; // raw file .docx
+}
+
+message PlaceholderResponse {
+  repeated string placeholders = 1;
+}
+
+message GenerateRequest {
+  bytes template = 1;               // raw file .docx
+  map<string,string> data = 2;      // k/v untuk {{key}}
+  string filename_hint = 3;         // opsional: nama file dasar (tanpa ekstensi)
+}
+
+message GenerateResponse {
+  bytes content = 1;                // PDF atau DOCX (sesuai RPC)
+  string content_type = 2;          // application/pdf atau application/vnd.openxmlformats-officedocument.wordprocessingml.document
+  string filename = 3;              // nama file saran (mis. result.pdf)
+}
