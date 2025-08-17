@@ -29,7 +29,6 @@ jobs:
         with:
           context: .
           file: Dockerfile
-          target: production
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:nightly
