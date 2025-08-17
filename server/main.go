@@ -51,7 +51,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("listen failed: %v", err)
 	}
-	log.Println("gRPC server listening :50051, metrics at :9090/metrics")
+	log.Println("gRPC server listening :5051, metrics at :9090/metrics")
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatalf("serve failed: %v", err)
 	}
