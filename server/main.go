@@ -7,6 +7,8 @@ import (
 	"github.com/dedinirtadinata/docxtool/workerpool"
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	"golang.org/x/time/rate"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"log"
 	"net"
 
@@ -39,7 +41,7 @@ func main() {
 		grpc_prometheus.StreamServerInterceptor,
 	)
 
-	// create server
+	// ✅  create server
 	grpcServer := grpc.NewServer(
 		grpc.UnaryInterceptor(unaryChain),
 		grpc.StreamInterceptor(streamChain),
@@ -53,6 +55,12 @@ func main() {
 
 	// reflection for debug
 	// reflection.Register(grpcServer)
+	// ✅ register health service
+	healthServer := health.NewServer()
+	grpc_health_v1.RegisterHealthServer(grpcServer, healthServer)
+
+	// set status sehat
+	healthServer.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
 
 	lis, err := net.Listen("tcp", ":5051")
 	if err != nil {
