@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/dedinirtadinata/docxtool/workerpool"
+	"github.com/lukasjarosch/go-docx"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,10 +19,10 @@ import (
 
 type DocService struct {
 	docgenpb.UnimplementedDocServiceServer
-	WP *workerpool.WorkerPool
+	wp *workerpool.WorkerPool
 }
 
-func NewDocService() *DocService { return &DocService{} }
+func NewDocService(wp *workerpool.WorkerPool) *DocService { return &DocService{wp: wp} }
 
 // ---------- Utilities ----------
 
@@ -33,7 +34,7 @@ func paragraphText(p document.Paragraph) string {
 	return b.String()
 }
 
-var rePH = regexp.MustCompile(`\{\{([a-zA-Z0-9_]+)\}\}`)
+var rePH = regexp.MustCompile(`\{([a-zA-Z0-9_]+)\}`)
 
 func extractPlaceholdersFromDoc(doc *document.Document) []string {
 	seen := map[string]struct{}{}
@@ -53,7 +54,7 @@ func extractPlaceholdersFromDoc(doc *document.Document) []string {
 }
 
 func replacePlaceholders(doc *document.Document, data map[string]string) {
-	re := regexp.MustCompile(`\{\{(.*?)\}\}`)
+	re := regexp.MustCompile(`\{(.*?)\}`)
 	for _, para := range doc.Paragraphs() {
 		for _, run := range para.Runs() {
 			txt := run.Text()
@@ -166,11 +167,6 @@ func (s *DocService) GetPlaceholders(ctx context.Context, req *docgenpb.Template
 }
 
 func (s *DocService) GenerateDocx(ctx context.Context, req *docgenpb.GenerateRequest) (*docgenpb.GenerateResponse, error) {
-	////call limiter disini
-	//result, err := s.WP.Submit(ctx, req.Placeholders)
-	//if err != nil {
-	//	return nil, err
-	//}
 
 	if len(req.GetTemplate()) == 0 {
 		return nil, fmt.Errorf("template is empty")
@@ -180,37 +176,43 @@ func (s *DocService) GenerateDocx(ctx context.Context, req *docgenpb.GenerateReq
 		return nil, err
 	}
 	defer os.Remove(tmp)
+	// Apply placeholders
+	job := func() (*docgenpb.GenerateResponse, error) {
+		tpl, err := docx.Open(tmp)
+		if err != nil {
+			return nil, err
+		}
 
-	doc, err := document.Open(tmp)
-	if err != nil {
-		return nil, err
+		var mappingData = docx.PlaceholderMap{}
+		for k, v := range req.Data {
+			mappingData[k] = v
+		}
+		if err := tpl.ReplaceAll(mappingData); err != nil {
+			return nil, err
+		}
+
+		// Write to buffer
+		var buf bytes.Buffer
+		if err := tpl.Write(&buf); err != nil {
+			return nil, err
+		}
+
+		filename := req.GetFilenameHint()
+		if filename == "" {
+			filename = "result.docx"
+		} else if !strings.HasSuffix(strings.ToLower(filename), ".docx") {
+			filename += ".docx"
+		}
+
+		return &docgenpb.GenerateResponse{
+			Content:     buf.Bytes(),
+			ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+			Filename:    filename,
+		}, nil
 	}
 
-	replacePlaceholders(doc, req.GetData())
-
-	outDocx := tmp + ".filled.docx"
-	if err := doc.SaveToFile(outDocx); err != nil {
-		return nil, err
-	}
-	defer os.Remove(outDocx)
-
-	bytes, err := os.ReadFile(outDocx)
-	if err != nil {
-		return nil, err
-	}
-
-	filename := req.GetFilenameHint()
-	if filename == "" {
-		filename = "result.docx"
-	} else if !strings.HasSuffix(strings.ToLower(filename), ".docx") {
-		filename += ".docx"
-	}
-
-	return &docgenpb.GenerateResponse{
-		Content:     bytes,
-		ContentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-		Filename:    filename,
-	}, nil
+	// Submit job ke worker pool
+	return s.wp.SubmitJob(ctx, job)
 }
 
 func (s *DocService) GeneratePDF(ctx context.Context, req *docgenpb.GenerateRequest) (*docgenpb.GenerateResponse, error) {
@@ -224,34 +226,52 @@ func (s *DocService) GeneratePDF(ctx context.Context, req *docgenpb.GenerateRequ
 	}
 	defer os.Remove(tmp)
 
-	doc, err := document.Open(tmp)
-	if err != nil {
-		return nil, err
-	}
-	replacePlaceholders(doc, req.GetData())
+	job := func() (*docgenpb.GenerateResponse, error) {
 
-	outDocx := tmp + ".filled.docx"
-	if err := doc.SaveToFile(outDocx); err != nil {
-		return nil, err
-	}
-	defer os.Remove(outDocx)
+		doc, err := docx.Open(tmp)
+		if err != nil {
+			return nil, err
+		}
 
-	// 2) convert ke PDF via LibreOffice
-	pdfBytes, err := convertDocxToPDF(outDocx)
-	if err != nil {
-		return nil, err
-	}
+		var mappingData = docx.PlaceholderMap{}
 
-	filename := req.GetFilenameHint()
-	if filename == "" {
-		filename = "result.pdf"
-	} else if !strings.HasSuffix(strings.ToLower(filename), ".pdf") {
-		filename += ".pdf"
-	}
+		for k, v := range req.Data {
+			mappingData[k] = v
+		}
 
-	return &docgenpb.GenerateResponse{
-		Content:     pdfBytes,
-		ContentType: "application/pdf",
-		Filename:    filename,
-	}, nil
+		if err := doc.ReplaceAll(mappingData); err != nil {
+			return nil, err
+		}
+
+		outDocx := tmp + ".filled.docx"
+
+		err = doc.WriteToFile(outDocx)
+		defer os.Remove(outDocx)
+
+		if err != nil {
+			return nil, err
+		}
+
+		// 2) convert ke PDF via LibreOffice
+		pdfBytes, err := convertDocxToPDF(outDocx)
+		if err != nil {
+			return nil, err
+		}
+
+		filename := req.GetFilenameHint()
+		if filename == "" {
+			filename = "result.pdf"
+		} else if !strings.HasSuffix(strings.ToLower(filename), ".pdf") {
+			filename += ".pdf"
+		}
+
+		return &docgenpb.GenerateResponse{
+			Content:     pdfBytes,
+			ContentType: "application/pdf",
+			Filename:    filename,
+		}, nil
+
+	}
+	// Submit job ke worker pool
+	return s.wp.SubmitJob(ctx, job)
 }

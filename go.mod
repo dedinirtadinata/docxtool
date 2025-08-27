@@ -6,6 +6,7 @@ require (
 	baliance.com/gooxml v1.0.1
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
+	github.com/lukasjarosch/go-docx v0.5.0
 	github.com/prometheus/client_golang v1.23.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/time v0.12.0
