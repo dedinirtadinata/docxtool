@@ -6,6 +6,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"strings"
 )
 
 // simple in-memory API keys; replace with DB/Redis in production
@@ -43,6 +44,12 @@ func checkAPIKey(md metadata.MD) error {
 
 func UnaryAuthInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 	md, _ := metadata.FromIncomingContext(ctx)
+
+	// 🚨 bypass untuk health check
+	if strings.HasPrefix(info.FullMethod, "/grpc.health.v1.Health/") {
+		return handler(ctx, req)
+	}
+
 	if err := checkAPIKey(md); err != nil {
 		return nil, err
 	}
@@ -51,6 +58,12 @@ func UnaryAuthInterceptor(ctx context.Context, req interface{}, info *grpc.Unary
 
 func StreamAuthInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 	md, _ := metadata.FromIncomingContext(ss.Context())
+
+	// 🚨 bypass untuk health check
+	if strings.HasPrefix(info.FullMethod, "/grpc.health.v1.Health/") {
+		return handler(srv, ss)
+	}
+
 	if err := checkAPIKey(md); err != nil {
 		return err
 	}
