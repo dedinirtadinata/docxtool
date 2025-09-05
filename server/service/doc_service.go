@@ -1,11 +1,14 @@
 package service
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
 	"github.com/dedinirtadinata/docxtool/workerpool"
 	"github.com/lukasjarosch/go-docx"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,40 +40,110 @@ func paragraphText(p document.Paragraph) string {
 var rePH = regexp.MustCompile(`\{([a-zA-Z0-9_]+)\}`)
 
 func extractPlaceholdersFromDoc(doc *document.Document) []string {
-	seen := map[string]struct{}{}
-	for _, p := range doc.Paragraphs() {
-		txt := paragraphText(p)
-		for _, m := range rePH.FindAllStringSubmatch(txt, -1) {
+	placeholders := map[string]struct{}{}
+	for _, para := range doc.Paragraphs() {
+		var sb strings.Builder
+
+		// Gabungkan semua Run jadi satu string
+		for _, run := range para.Runs() {
+			sb.WriteString(run.Text())
+		}
+
+		text := sb.String()
+		// Jalankan regex
+		matches := rePH.FindAllStringSubmatch(text, -1)
+		for _, m := range matches {
 			if len(m) > 1 {
-				seen[m[1]] = struct{}{}
+				placeholders[m[1]] = struct{}{}
 			}
 		}
 	}
-	out := make([]string, 0, len(seen))
-	for k := range seen {
+	out := make([]string, 0, len(placeholders))
+	for k := range placeholders {
 		out = append(out, k)
 	}
+
 	return out
 }
 
-func replacePlaceholders(doc *document.Document, data map[string]string) {
-	re := regexp.MustCompile(`\{(.*?)\}`)
-	for _, para := range doc.Paragraphs() {
-		for _, run := range para.Runs() {
-			txt := run.Text()
-			newTxt := re.ReplaceAllStringFunc(txt, func(ph string) string {
-				key := strings.Trim(ph, "{}")
-				if val, ok := data[key]; ok {
-					return val
+type Text struct {
+	XMLName xml.Name `xml:"w:t"`
+	Text    string   `xml:",chardata"`
+}
+
+func extractPlaceholders(docxPath string) ([]string, error) {
+	r, err := zip.OpenReader(docxPath)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+
+	var textBuilder strings.Builder
+
+	// Cari document.xml
+	for _, f := range r.File {
+		if f.Name == "word/document.xml" {
+			rc, err := f.Open()
+			if err != nil {
+				return nil, err
+			}
+			defer rc.Close()
+
+			decoder := xml.NewDecoder(rc)
+			for {
+				tok, err := decoder.Token()
+				if err == io.EOF {
+					break
 				}
-				return ph
-			})
-			if newTxt != txt {
-				run.ClearContent()
-				run.AddText(newTxt)
+				if err != nil {
+					return nil, err
+				}
+
+				switch se := tok.(type) {
+				case xml.CharData:
+					// Ambil teks mentah, langsung gabung
+					textBuilder.WriteString(string(se))
+				}
 			}
 		}
 	}
+
+	fullText := textBuilder.String()
+
+	// Scan manual { ... }
+	var placeholders []string
+	seen := make(map[string]struct{})
+	var current strings.Builder
+	inPlaceholder := false
+
+	for _, ch := range fullText {
+		switch ch {
+		case '{':
+			inPlaceholder = true
+			current.Reset()
+		case '}':
+			if inPlaceholder {
+				val := strings.TrimSpace(current.String())
+				if val != "" {
+					if _, ok := seen[val]; !ok {
+						placeholders = append(placeholders, val)
+						seen[val] = struct{}{}
+					}
+				}
+			}
+			inPlaceholder = false
+		default:
+			if inPlaceholder {
+				current.WriteRune(ch)
+			}
+		}
+	}
+
+	fmt.Println("Daftar placeholder ditemukan:")
+	for _, ph := range placeholders {
+		fmt.Println("-", ph)
+	}
+	return placeholders, nil
 }
 
 func detectLibreOffice() (string, error) {
@@ -158,11 +231,16 @@ func (s *DocService) GetPlaceholders(ctx context.Context, req *docgenpb.Template
 	}
 	defer os.Remove(tmp)
 
-	doc, err := document.Open(tmp)
+	//doc, err := document.Open(tmp)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//placeholders := extractPlaceholdersFromDoc(doc)
+	placeholders, err := extractPlaceholders(tmp)
 	if err != nil {
 		return nil, err
 	}
-	placeholders := extractPlaceholdersFromDoc(doc)
+
 	return &docgenpb.PlaceholderResponse{Placeholders: placeholders}, nil
 }
 
